@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HexCon by D3 // v1.1</title>
+<style>
+  /* 1-bit monochrome CSS variables */
+  :root{--bg:#fff;--fg:#000;--mut:#555}
+  body.inv{--bg:#000;--fg:#fff;--mut:#aaa}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--fg);font:12px/1.35 'Courier New',Courier,monospace;padding:8px;height:100vh;display:flex;flex-direction:column;gap:6px;overflow:hidden}
+  .box{border:2px solid var(--fg);padding:6px 8px;background:var(--bg)}
+  .row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px}
+  /* Tactile monochrome buttons */
+  button,select{background:var(--bg);color:var(--fg);border:2px solid var(--fg);font:700 11px/1 inherit;padding:4px 8px;cursor:pointer;text-transform:uppercase}
+  button:hover:not(:disabled),select:hover{background:var(--fg);color:var(--bg)}
+  button:active:not(:disabled){transform:translate(1px,1px)}
+  button:disabled{opacity:.35;cursor:not-allowed}
+  button.on{background:var(--fg);color:var(--bg)}
+  /* Compact dropzone */
+  #drop{border:2px dashed var(--fg);padding:10px;text-align:center;font-weight:700;cursor:pointer;user-select:none}
+  #drop:hover,#drop.over{background:var(--fg);color:var(--bg)}
+  /* Single-row telemetry & output */
+  .meta{font-size:11px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+  .meta span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mut{color:var(--mut)}
+  textarea{flex:1;width:100%;min-height:0;resize:none;border:2px solid var(--fg);background:var(--bg);color:var(--fg);font:12px/1.35 'Courier New',Courier,monospace;padding:6px;outline:none;word-break:break-all}
+  @media(max-width:640px){body{height:auto;min-height:100vh;overflow:auto}.meta{grid-template-columns:1fr 1fr}textarea{min-height:240px}}
+</style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="box row">
+    <strong>HEXCON BY D3 // v1.1</strong>
+    <div class="row">
+      <span id="prog" class="mut">[░░░░░░░░░░░░] 0%</span>
+      <button id="invBtn" type="button">[ INVERT B/W ]</button>
+    </div>
+  </div>
+
+  <!-- File Drop Zone -->
+  <div id="drop" tabindex="0">
+    DROP ROM / BIN FILE OR CLICK (.ROM .BIN .GEN .NES .GBA .GB .GBC .SFC .SMC .N64 .Z64 .SMS .GG .MD)
+    <input id="file" type="file" hidden accept=".rom,.bin,.gen,.nes,.gba,.gb,.gbc,.sfc,.smc,.n64,.z64,.v64,.sms,.gg,.md,.32x,.iso,.img,.nds,.pce,*/*">
+  </div>
+
+  <!-- Single-Row Metadata Strip -->
+  <div class="box meta">
+    <span><b class="mut">FILE:</b> <b id="mName">NONE</b></span>
+    <span><b class="mut">SYS:</b> <b id="mSys">-</b></span>
+    <span><b class="mut">SIZE:</b> <b id="mSize">0 B</b></span>
+    <span><b class="mut">CRC32:</b> <b id="mCrc">-</b></span>
+  </div>
+
+  <!-- Controls Bar -->
+  <div class="box row">
+    <div class="row">
+      <select id="fmt" aria-label="Hex Format">
+        <option value="0">CONTINUOUS (4E45531A)</option>
+        <option value="1">SPACED (4E 45 53 1A)</option>
+        <option value="2">0X ARRAY (0x4E, 0x45)</option>
+      </select>
+      <button id="uBtn" class="on" type="button">UPPER</button>
+      <button id="lBtn" type="button">lower</button>
+    </div>
+    <div class="row">
+      <span id="stat" class="mut">READY</span>
+      <button id="cpyBtn" type="button" disabled>[ COPY TEXT ]</button>
+      <button id="savBtn" type="button" disabled>[ SAVE .TXT ]</button>
+    </div>
+  </div>
+
+  <!-- Output Console -->
+  <textarea id="out" readonly placeholder="// hex output prints here..."></textarea>
+
+<script>
+(() => {
+  // 256-entry lookup tables & CRC32 table
+  const HU = Array.from({length: 256}, (_, i) => i.toString(16).padStart(2, '0').toUpperCase());
+  const HL = HU.map(h => h.toLowerCase());
+  const CRC_T = new Uint32Array(256).map((_, i) => {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    return c >>> 0;
+  });
+
+  // System detector map
+  const SYS = {
+    nes:'NES/FC', unf:'NES-UNIF', fds:'FDS', sfc:'SNES', smc:'SNES-SMC', gba:'GBA',
+    gb:'GB', gbc:'GBC', n64:'N64-LE', z64:'N64-BE', v64:'N64-BS', nds:'NDS',
+    gen:'GENESIS', md:'MEGADRIVE', sms:'SMS', gg:'GAMEGEAR', '32x':'32X',
+    pce:'PCE', rom:'ROM', bin:'BIN', iso:'ISO', img:'IMG'
+  };
+
+  // DOM refs
+  const $ = id => document.getElementById(id);
+  const drop = $('drop'), fileIn = $('file'), out = $('out'), fmt = $('fmt');
+  const uBtn = $('uBtn'), lBtn = $('lBtn'), cpyBtn = $('cpyBtn'), savBtn = $('savBtn');
+  const prog = $('prog'), stat = $('stat');
+
+  // State
+  let buf = null, fileName = '', fullHex = '', upper = true, runId = 0;
+  const PREVIEW_MAX = 150000, CHUNK = 131072;
+
+  // Helpers
+  const fmtBytes = b => b < 1024 ? b + ' B' : (b / 1048576 >= 1 ? (b / 1048576).toFixed(2) + ' MB' : (b / 1024).toFixed(1) + ' KB') + ` (${b.toLocaleString()})`;
+  const crc32 = u8 => {
+    let c = 0xFFFFFFFF;
+    for (let i = 0; i < u8.length; i++) c = CRC_T[(c ^ u8[i]) & 0xFF] ^ (c >>> 8);
+    return ((c ^ 0xFFFFFFFF) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+  };
+  const setProg = (done, tot) => {
+    const p = tot ? Math.min(100, Math.round((done / tot) * 100)) : 0;
+    const f = Math.round((p / 100) * 12);
+    prog.textContent = `[${'█'.repeat(f)}${'░'.repeat(12 - f)}] ${p}%`;
+  };
+
+  // Chunked non-blocking conversion
+  function convert() {
+    if (!buf) return;
+    const id = ++runId, tot = buf.length, mode = +fmt.value, lut = upper ? HU : HL;
+    fullHex = ''; out.value = ''; cpyBtn.disabled = savBtn.disabled = true;
+    stat.textContent = 'CONVERTING...'; setProg(0, tot);
+
+    const chunks = [];
+    let off = 0;
+
+    function step() {
+      if (id !== runId) return;
+      const end = Math.min(off + CHUNK, tot), len = end - off, arr = new Array(len);
+      if (mode === 0) {
+        for (let i = 0; i < len; i++) arr[i] = lut[buf[off + i]];
+        chunks.push(arr.join(''));
+      } else if (mode === 1) {
+        for (let i = 0; i < len; i++) arr[i] = lut[buf[off + i]];
+        chunks.push(arr.join(' '));
+      } else {
+        for (let i = 0; i < len; i++) arr[i] = '0x' + lut[buf[off + i]];
+        chunks.push(arr.join(', '));
+      }
+      off = end; setProg(off, tot);
+      if (off < tot) return requestAnimationFrame(step);
+
+      fullHex = chunks.join(mode === 0 ? '' : mode === 1 ? ' ' : ', ');
+      out.value = fullHex.length > PREVIEW_MAX
+        ? fullHex.slice(0, PREVIEW_MAX) + '\n\n... [PREVIEW TRUNCATED AT 150K CHARS — FULL HEX READY FOR COPY/SAVE] ...'
+        : fullHex;
+      stat.textContent = `${fullHex.length.toLocaleString()} CHARS`;
+      cpyBtn.disabled = savBtn.disabled = !fullHex.length;
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Load file into buffer
+  function loadFile(f) {
+    if (!f) return;
+    fileName = f.name;
+    const ext = fileName.includes('.') ? fileName.split('.').pop().toLowerCase() : '';
+    $('mName').textContent = fileName;
+    $('mSys').textContent = SYS[ext] || (ext ? ext.toUpperCase() : 'RAW');
+    $('mSize').textContent = fmtBytes(f.size);
+    $('mCrc').textContent = '...';
+
+    const r = new FileReader();
+    r.onload = e => {
+      buf = new Uint8Array(e.target.result);
+      $('mCrc').textContent = crc32(buf);
+      convert();
+    };
+    r.readAsArrayBuffer(f);
+  }
+
+  // Event bindings
+  $('invBtn').onclick = () => document.body.classList.toggle('inv');
+  drop.onclick = () => fileIn.click();
+  drop.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') fileIn.click(); };
+  fileIn.onchange = e => loadFile(e.target.files[0]);
+
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => loadFile(e.dataTransfer.files[0]));
+
+  fmt.onchange = convert;
+  uBtn.onclick = () => { if (!upper) { upper = true; uBtn.classList.add('on'); lBtn.classList.remove('on'); convert(); } };
+  lBtn.onclick = () => { if (upper) { upper = false; lBtn.classList.add('on'); uBtn.classList.remove('on'); convert(); } };
+
+  // Clipboard Copy (iFrame-safe fallback + Clipboard API)
+  cpyBtn.onclick = () => {
+    if (!fullHex) return;
+    const ta = document.createElement('textarea');
+    ta.value = fullHex; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    document.body.removeChild(ta);
+    if (!ok && navigator.clipboard) navigator.clipboard.writeText(fullHex).catch(() => {});
+    cpyBtn.textContent = 'COPIED!';
+    setTimeout(() => cpyBtn.textContent = '[ COPY TEXT ]', 1500);
+  };
+
+  // Save .TXT export
+  savBtn.onclick = () => {
+    if (!fullHex) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([fullHex], {type: 'text/plain'}));
+    a.download = (fileName.replace(/\.[^/.]+$/, '') || 'rom') + '_hex.txt';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+})();
+</script>
+</body>
+</html>
