@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HexCon by D3 — ROM & Binary to Hex Utility (v1.1)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* ==========================================================================
+       1-BIT MONOCHROME & HOMEBREW ROM SCENE STYLING (v1.1)
+       Zero gradients, zero neon glows, hard 2px borders & 4px offset shadows.
+       ========================================================================== */
+    :root {
+      --bg: #f4f4f0;
+      --surface: #ffffff;
+      --ink: #111111;
+      --muted: #555555;
+      --border: #111111;
+      --shadow: #111111;
+      --inverse-bg: #111111;
+      --inverse-ink: #f4f4f0;
+    }
+
+    body.dark-terminal {
+      --bg: #111111;
+      --surface: #181818;
+      --ink: #f4f4f0;
+      --muted: #9e9e98;
+      --border: #f4f4f0;
+      --shadow: #f4f4f0;
+      --inverse-bg: #f4f4f0;
+      --inverse-ink: #111111;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--ink);
+      font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;
+      margin: 0;
+      padding: 0;
+      line-height: 1.45;
+      transition: background-color 0.12s steps(2), color 0.12s steps(2);
+    }
+
+    /* Classic offset brutalist/homebrew card */
+    .zine-box {
+      background-color: var(--surface);
+      border: 2px solid var(--border);
+      box-shadow: 4px 4px 0px var(--shadow);
+    }
+
+    .zine-box-flat {
+      background-color: var(--bg);
+      border: 2px solid var(--border);
+    }
+
+    /* Tactile mechanical button that depresses on click */
+    .retro-btn {
+      background-color: var(--surface);
+      color: var(--ink);
+      border: 2px solid var(--border);
+      box-shadow: 3px 3px 0px var(--shadow);
+      font-family: inherit;
+      font-weight: 700;
+      text-transform: uppercase;
+      cursor: pointer;
+      user-select: none;
+      transition: transform 0.05s linear, box-shadow 0.05s linear;
+    }
+
+    .retro-btn:hover:not(:disabled) {
+      background-color: var(--inverse-bg);
+      color: var(--inverse-ink);
+    }
+
+    .retro-btn:active:not(:disabled) {
+      transform: translate(2px, 2px);
+      box-shadow: 1px 1px 0px var(--shadow);
+    }
+
+    .retro-btn:disabled {
+      opacity: 0.38;
+      cursor: not-allowed;
+      box-shadow: none;
+    }
+
+    .retro-btn-primary {
+      background-color: var(--inverse-bg);
+      color: var(--inverse-ink);
+    }
+
+    .retro-btn-primary:hover:not(:disabled) {
+      background-color: var(--surface);
+      color: var(--ink);
+    }
+
+    /* Dropzone styling */
+    .drop-area {
+      border: 2px dashed var(--border);
+      background-color: var(--bg);
+      cursor: pointer;
+    }
+
+    .drop-area:hover,
+    .drop-area.drag-over {
+      background-color: var(--inverse-bg);
+      color: var(--inverse-ink);
+    }
+
+    .drop-area:hover .muted-text,
+    .drop-area.drag-over .muted-text {
+      color: var(--inverse-ink);
+      opacity: 0.85;
+    }
+
+    .muted-text {
+      color: var(--muted);
+    }
+
+    /* Custom monochrome radio inputs */
+    input[type="radio"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 15px;
+      height: 15px;
+      border: 2px solid var(--border);
+      background-color: var(--surface);
+      display: inline-grid;
+      place-content: center;
+      margin: 0;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    input[type="radio"]::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      background-color: var(--ink);
+      transform: scale(0);
+    }
+
+    input[type="radio"]:checked::before {
+      transform: scale(1);
+    }
+
+    /* Textarea styling */
+    textarea.hex-dump {
+      background-color: var(--bg);
+      color: var(--ink);
+      border: 2px solid var(--border);
+      font-family: 'Courier New', Courier, 'Lucida Console', Monaco, monospace;
+      outline: none;
+    }
+
+    textarea.hex-dump:focus {
+      background-color: var(--surface);
+    }
+
+    /* Simple 1-bit blinking cursor */
+    @keyframes blink {
+      0%, 49% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    .cursor-blink {
+      animation: blink 1s infinite;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+      width: 10px;
+      height: 10px;
+    }
+    ::-webkit-scrollbar-track {
+      background: var(--bg);
+      border-left: 2px solid var(--border);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: var(--ink);
+      border: 2px solid var(--bg);
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col p-3 sm:p-6">
+
+  <!-- Main Centered Zine / Console Container -->
+  <div class="max-w-5xl w-full mx-auto flex-1 flex flex-col gap-5">
+
+    <!-- Top Header Banner -->
+    <header class="zine-box p-4 sm:p-5">
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+          <!-- Compact ASCII Title Art -->
+          <pre class="text-[10px] sm:text-xs font-bold leading-none select-none overflow-x-auto pb-1" aria-hidden="true">
+ _  _ ___ __  __ ___  ___  _  _    ___  _   _    ___  ____
+| || | __|\ \/ // __|/ _ \| \| |  | _ )| | | |  |   \|__ /
+| __ | _|  >  <| (__| (_) | .` |  | _ \ \ V /   | |) ||_ \
+|_||_|___|/_/\_\\___|\___/|_|\_|  |___/  |_|    |___/|___/</pre>
+          <div class="mt-2 flex flex-wrap items-center gap-2 text-xs sm:text-sm">
+            <span class="font-bold">[ HexCon by D3 // v1.1 ]</span>
+            <span class="muted-text">raw rom &amp; binary to hex string utility</span>
+          </div>
+        </div>
+
+        <!-- Theme Invert Toggle -->
+        <div class="flex flex-wrap items-center gap-2">
+          <button id="invertThemeBtn" type="button" class="retro-btn px-3.5 py-2 text-xs" title="Switch Paper White / Terminal Black">
+            [ INVERT B/W ]
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Status Notice Bar (Replaces browser alerts) -->
+    <div id="noticeBar" class="hidden zine-box-flat px-4 py-2.5 text-xs sm:text-sm font-bold flex items-center justify-between gap-3">
+      <span id="noticeText">&gt; notice</span>
+      <button id="closeNoticeBtn" type="button" class="underline cursor-pointer">[X]</button>
+    </div>
+
+    <!-- Step 1 & Step 2 Grid -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
+
+      <!-- Left: File Input & ROM Telemetry (7 Cols) -->
+      <section class="lg:col-span-7 zine-box p-4 sm:p-5 flex flex-col justify-between gap-4">
+        <div>
+          <div class="flex items-center justify-between border-b-2 border-current pb-2 mb-4">
+            <h2 class="text-sm font-bold uppercase">01. LOAD ROM / BINARY FILE</h2>
+            <span class="text-xs muted-text">NO UPLOAD • LOCAL ONLY</span>
+          </div>
+
+          <!-- Dropzone -->
+          <div id="dropZone" class="drop-area p-6 sm:p-8 text-center transition-colors">
+            <input id="fileInput" type="file" class="hidden"
+              accept=".rom,.bin,.gen,.nes,.gba,.gb,.gbc,.sfc,.smc,.n64,.z64,.v64,.sms,.gg,.md,.32x,.iso,.img,.nds,.pce,.ngp,.ws,.wsc,.a26,.a78,*/*" />
+
+            <p class="text-sm sm:text-base font-bold mb-1">
+              &gt; DROP ROM HERE OR CLICK TO BROWSE_
+            </p>
+            <p class="text-xs muted-text max-w-md mx-auto">
+              accepts: .rom .bin .gen .nes .gba .gb .gbc .sfc .smc .n64 .z64 .sms .gg .md .iso &amp; raw dumps
+            </p>
+          </div>
+        </div>
+
+        <!-- File Telemetry Bar -->
+        <div id="fileMetaCard" class="zine-box-flat p-3.5 text-xs space-y-2">
+          <div class="flex items-center justify-between gap-2 border-b border-current pb-1.5">
+            <span class="font-bold">FILE TELEMETRY:</span>
+            <button id="reconvertBtn" type="button" disabled class="retro-btn px-2.5 py-1 text-[11px]">
+              [ RE-RUN ]
+            </button>
+          </div>
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
+            <p class="truncate"><span class="muted-text">FILE NAME:</span> <strong id="metaFileName">NONE</strong></p>
+            <p class="truncate"><span class="muted-text">SYSTEM/TYPE:</span> <strong id="metaSystemName">-</strong></p>
+            <p><span class="muted-text">BYTE SIZE:</span> <strong id="metaFileSize">0 B</strong></p>
+            <p><span class="muted-text">CRC32 / HEX:</span> <strong id="metaCrcHex">- / 0 CHARS</strong></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Right: Format & Casing Options (5 Cols) -->
+      <section class="lg:col-span-5 zine-box p-4 sm:p-5 flex flex-col justify-between gap-4">
+        <div>
+          <div class="flex items-center justify-between border-b-2 border-current pb-2 mb-4">
+            <h2 class="text-sm font-bold uppercase">02. HEX OUTPUT FORMAT</h2>
+            <span class="text-xs muted-text">EMULATOR READY</span>
+          </div>
+
+          <div class="space-y-2.5 text-xs">
+            <label class="zine-box-flat p-2.5 flex items-start gap-2.5 cursor-pointer">
+              <input type="radio" name="hexFormat" value="continuous" checked class="mt-0.5" />
+              <div class="min-w-0">
+                <span class="font-bold block">CONTINUOUS STRING</span>
+                <span class="muted-text block truncate">4E45531A02010000...</span>
+              </div>
+            </label>
+
+            <label class="zine-box-flat p-2.5 flex items-start gap-2.5 cursor-pointer">
+              <input type="radio" name="hexFormat" value="spaced" class="mt-0.5" />
+              <div class="min-w-0">
+                <span class="font-bold block">SPACE-SEPARATED</span>
+                <span class="muted-text block truncate">4E 45 53 1A 02 01...</span>
+              </div>
+            </label>
+
+            <label class="zine-box-flat p-2.5 flex items-start gap-2.5 cursor-pointer">
+              <input type="radio" name="hexFormat" value="c_array" class="mt-0.5" />
+              <div class="min-w-0">
+                <span class="font-bold block">C / 0X ARRAY</span>
+                <span class="muted-text block truncate">0x4E, 0x45, 0x53...</span>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Case Selector -->
+        <div class="pt-3 border-t-2 border-current flex items-center justify-between gap-2 text-xs">
+          <span class="font-bold">HEX CASE:</span>
+          <div class="flex items-center gap-2">
+            <button id="caseUpperBtn" type="button" class="retro-btn retro-btn-primary px-3 py-1 text-xs">
+              UPPERCASE
+            </button>
+            <button id="caseLowerBtn" type="button" class="retro-btn px-3 py-1 text-xs">
+              lowercase
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Console Progress & Status Log -->
+    <section class="zine-box p-4 text-xs sm:text-sm space-y-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="font-bold">
+          <span id="statusText">&gt; ready. drop rom or click browse...</span><span class="cursor-blink">_</span>
+        </div>
+        <div class="text-xs font-bold">
+          <span id="progressPercent">0%</span>
+        </div>
+      </div>
+
+      <!-- Classic ASCII Block Progress Bar -->
+      <div class="zine-box-flat p-2 flex items-center justify-between gap-3 font-bold text-xs overflow-hidden">
+        <span id="asciiProgressBar" class="tracking-tighter whitespace-nowrap">[░░░░░░░░░░░░░░░░] 0%</span>
+        <span id="byteCounter" class="muted-text whitespace-nowrap">0 / 0 BYTES</span>
+      </div>
+    </section>
+
+    <!-- Step 3: Output Console & Action Buttons -->
+    <section class="zine-box p-4 sm:p-5 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-3 border-b-2 border-current pb-3">
+        <div>
+          <h2 class="text-sm font-bold uppercase">03. CONVERTED HEX STRING</h2>
+          <p id="outputStats" class="text-xs muted-text mt-0.5">0 bytes • 0 hex chars</p>
+        </div>
+
+        <div class="flex flex-wrap items-center gap-2.5">
+          <button id="clearBtn" type="button" disabled class="retro-btn px-3.5 py-2 text-xs">
+            [ CLEAR ]
+          </button>
+          <button id="downloadTxtBtn" type="button" disabled class="retro-btn px-3.5 py-2 text-xs">
+            [ DOWNLOAD .TXT ]
+          </button>
+          <button id="copyTextBtn" type="button" disabled class="retro-btn retro-btn-primary px-4 py-2 text-xs">
+            <span id="copyBtnText">[ COPY TEXT ]</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Large File Preview Truncation Notice -->
+      <div id="previewNotice" class="hidden zine-box-flat p-2.5 text-xs">
+        <strong>NOTE:</strong> Showing first 100,000 chars in box so your browser stays fast. <strong>[ COPY TEXT ]</strong> &amp; <strong>[ DOWNLOAD .TXT ]</strong> export the entire full ROM string.
+      </div>
+
+      <!-- Hex Output Textarea -->
+      <textarea id="hexOutputBox" readonly rows="11"
+        placeholder="// hex output will print here after loading a rom file..."
+        class="hex-dump w-full p-3 text-xs sm:text-sm leading-relaxed resize-y break-all"></textarea>
+    </section>
+
+    <!-- Human-Made Footer Sign-off -->
+    <footer class="text-center text-xs muted-text py-2">
+      <p>HexCon by D3 // v1.1 — built for emulator hackers, rom dumpers &amp; late-night tinkering</p>
+    </footer>
+
+  </div>
+
+  <!-- Hidden Copy Staging Box for iFrame-safe Clipboard Copying -->
+  <textarea id="clipboardStaging" class="fixed -left-[9999px] top-0 opacity-0" aria-hidden="true"></textarea>
+
+  <script>
+    /**
+     * ============================================================================
+     * HEXCON BY D3 (v1.1) — NON-BLOCKING CHUNKED ROM-TO-HEX CONVERSION ENGINE
+     * ============================================================================
+     */
+
+    // Precomputed 256-entry lookup tables for rapid byte-to-hex translation
+    const HEX_UPPER = new Array(256);
+    const HEX_LOWER = new Array(256);
+    for (let i = 0; i < 256; i++) {
+      const hex = i.toString(16).padStart(2, '0');
+      HEX_UPPER[i] = hex.toUpperCase();
+      HEX_LOWER[i] = hex.toLowerCase();
+    }
+
+    // Precomputed CRC32 table for instant ROM checksum verification
+    const CRC32_TABLE = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let k = 0; k < 8; k++) {
+        c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      }
+      CRC32_TABLE[i] = c >>> 0;
+    }
+
+    // Extension -> System Name Detection Map
+    const SYSTEM_MAP = {
+      nes: 'Nintendo Entertainment System (NES / Famicom)',
+      unf: 'Nintendo Entertainment System (UNIF)',
+      fds: 'Famicom Disk System',
+      sfc: 'Super Nintendo (SNES / Super Famicom)',
+      smc: 'Super Nintendo (SMC Headered)',
+      gba: 'Game Boy Advance (GBA)',
+      gb:  'Game Boy (DMG)',
+      gbc: 'Game Boy Color (GBC)',
+      n64: 'Nintendo 64 (Little-Endian)',
+      z64: 'Nintendo 64 (Big-Endian)',
+      v64: 'Nintendo 64 (Byte-Swapped)',
+      nds: 'Nintendo DS',
+      gen: 'Sega Genesis / Mega Drive',
+      md:  'Sega Mega Drive / Genesis',
+      sms: 'Sega Master System',
+      gg:  'Sega Game Gear',
+      '32x': 'Sega 32X',
+      pce: 'PC Engine / TurboGrafx-16',
+      ngp: 'Neo Geo Pocket',
+      ws:  'WonderSwan',
+      wsc: 'WonderSwan Color',
+      a26: 'Atari 2600',
+      a78: 'Atari 7800',
+      rom: 'Generic Emulator ROM Dump',
+      bin: 'Raw Binary Image (.BIN)',
+      iso: 'Optical Disc Binary Image (.ISO)',
+      img: 'Raw Disk / Memory Image (.IMG)'
+    };
+
+    // DOM Element References
+    const invertThemeBtn = document.getElementById('invertThemeBtn');
+    const noticeBar = document.getElementById('noticeBar');
+    const noticeText = document.getElementById('noticeText');
+    const closeNoticeBtn = document.getElementById('closeNoticeBtn');
+
+    const dropZone = document.getElementById('dropZone');
+    const fileInput = document.getElementById('fileInput');
+    const metaFileName = document.getElementById('metaFileName');
+    const metaFileSize = document.getElementById('metaFileSize');
+    const metaSystemName = document.getElementById('metaSystemName');
+    const metaCrcHex = document.getElementById('metaCrcHex');
+    const reconvertBtn = document.getElementById('reconvertBtn');
+
+    const formatRadios = document.querySelectorAll('input[name="hexFormat"]');
+    const caseUpperBtn = document.getElementById('caseUpperBtn');
+    const caseLowerBtn = document.getElementById('caseLowerBtn');
+
+    const statusText = document.getElementById('statusText');
+    const progressPercent = document.getElementById('progressPercent');
+    const asciiProgressBar = document.getElementById('asciiProgressBar');
+    const byteCounter = document.getElementById('byteCounter');
+
+    const outputStats = document.getElementById('outputStats');
+    const previewNotice = document.getElementById('previewNotice');
+    const hexOutputBox = document.getElementById('hexOutputBox');
+    const copyTextBtn = document.getElementById('copyTextBtn');
+    const copyBtnText = document.getElementById('copyBtnText');
+    const downloadTxtBtn = document.getElementById('downloadTxtBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const clipboardStaging = document.getElementById('clipboardStaging');
+
+    // Application State
+    let currentFile = null;
+    let currentBuffer = null;
+    let currentCrc32 = '-';
+    let fullHexResult = '';
+    let hexFormat = 'continuous'; // 'continuous' | 'spaced' | 'c_array'
+    let isUpperCase = true;
+    let activeConversionId = 0;
+
+    const PREVIEW_CHAR_LIMIT = 100000;
+    const CHUNK_SIZE_BYTES = 131072; // 128 KB per animation frame
+
+    // ----------------------------------------------------------------------------
+    // UI & CHECKSUM HELPERS
+    // ----------------------------------------------------------------------------
+    function showNotice(message) {
+      noticeText.textContent = `> ${message}`;
+      noticeBar.classList.remove('hidden');
+    }
+
+    closeNoticeBtn.addEventListener('click', () => {
+      noticeBar.classList.add('hidden');
+    });
+
+    function formatBytes(bytes) {
+      if (bytes === 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      const idx = Math.floor(Math.log(bytes) / Math.log(1024));
+      const val = (bytes / Math.pow(1024, idx)).toFixed(idx === 0 ? 0 : 2);
+      return `${val} ${units[idx]} (${bytes.toLocaleString()} B)`;
+    }
+
+    function detectSystem(filename) {
+      const parts = filename.split('.');
+      if (parts.length < 2) return 'Raw Binary / Extensionless Dump';
+      const ext = parts.pop().toLowerCase();
+      return SYSTEM_MAP[ext] || `Binary Dump (.${ext.toUpperCase()})`;
+    }
+
+    function computeCrc32(uint8View) {
+      let crc = 0xFFFFFFFF;
+      for (let i = 0; i < uint8View.length; i++) {
+        crc = CRC32_TABLE[(crc ^ uint8View[i]) & 0xFF] ^ (crc >>> 8);
+      }
+      return ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).toUpperCase().padStart(8, '0');
+    }
+
+    function updateProgress(processed, total) {
+      const pct = total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+      const totalBlocks = 16;
+      const filledBlocks = Math.round((pct / 100) * totalBlocks);
+      const bar = '█'.repeat(filledBlocks) + '░'.repeat(totalBlocks - filledBlocks);
+
+      progressPercent.textContent = `${pct}%`;
+      asciiProgressBar.textContent = `[${bar}] ${pct}%`;
+      byteCounter.textContent = `${processed.toLocaleString()} / ${total.toLocaleString()} BYTES`;
+    }
+
+    // ----------------------------------------------------------------------------
+    // B/W THEME INVERT TOGGLE
+    // ----------------------------------------------------------------------------
+    invertThemeBtn.addEventListener('click', () => {
+      document.body.classList.toggle('dark-terminal');
+    });
+
+    // ----------------------------------------------------------------------------
+    // FORMAT & CASING CONTROLS
+    // ----------------------------------------------------------------------------
+    formatRadios.forEach((radio) => {
+      radio.addEventListener('change', (e) => {
+        hexFormat = e.target.value;
+        if (currentBuffer) {
+          startConversion(currentBuffer, currentFile.name);
+        }
+      });
+    });
+
+    caseUpperBtn.addEventListener('click', () => {
+      if (isUpperCase) return;
+      isUpperCase = true;
+      caseUpperBtn.classList.add('retro-btn-primary');
+      caseLowerBtn.classList.remove('retro-btn-primary');
+      if (currentBuffer) {
+        startConversion(currentBuffer, currentFile.name);
+      }
+    });
+
+    caseLowerBtn.addEventListener('click', () => {
+      if (!isUpperCase) return;
+      isUpperCase = false;
+      caseLowerBtn.classList.add('retro-btn-primary');
+      caseUpperBtn.classList.remove('retro-btn-primary');
+      if (currentBuffer) {
+        startConversion(currentBuffer, currentFile.name);
+      }
+    });
+
+    // ----------------------------------------------------------------------------
+    // FILE INGESTION (CLICK & DRAG-AND-DROP)
+    // ----------------------------------------------------------------------------
+    dropZone.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files[0]) {
+        handleFileSelected(e.target.files[0]);
+      }
+    });
+
+    ['dragenter', 'dragover'].forEach((evtName) => {
+      dropZone.addEventListener(evtName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add('drag-over');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach((evtName) => {
+      dropZone.addEventListener(evtName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove('drag-over');
+      });
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      const files = e.dataTransfer?.files;
+      if (files && files[0]) {
+        handleFileSelected(files[0]);
+      }
+    });
+
+    reconvertBtn.addEventListener('click', () => {
+      if (currentBuffer && currentFile) {
+        startConversion(currentBuffer, currentFile.name);
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      activeConversionId++;
+      currentFile = null;
+      currentBuffer = null;
+      currentCrc32 = '-';
+      fullHexResult = '';
+      fileInput.value = '';
+
+      metaFileName.textContent = 'NONE';
+      metaSystemName.textContent = '-';
+      metaFileSize.textContent = '0 B';
+      metaCrcHex.textContent = '- / 0 CHARS';
+      reconvertBtn.disabled = true;
+
+      hexOutputBox.value = '';
+      previewNotice.classList.add('hidden');
+      outputStats.textContent = '0 bytes • 0 hex chars';
+      copyTextBtn.disabled = true;
+      downloadTxtBtn.disabled = true;
+      clearBtn.disabled = true;
+      copyBtnText.textContent = '[ COPY TEXT ]';
+
+      updateProgress(0, 0);
+      statusText.textContent = '> cleared. drop rom or click browse...';
+      noticeBar.classList.add('hidden');
+    });
+
+    function handleFileSelected(file) {
+      currentFile = file;
+      noticeBar.classList.add('hidden');
+
+      metaFileName.textContent = file.name;
+      metaFileSize.textContent = formatBytes(file.size);
+      metaSystemName.textContent = detectSystem(file.name);
+      metaCrcHex.textContent = 'HASHING...';
+      reconvertBtn.disabled = false;
+
+      if (file.size === 0) {
+        currentBuffer = new Uint8Array(0);
+        currentCrc32 = '00000000';
+        fullHexResult = '';
+        hexOutputBox.value = '';
+        metaCrcHex.textContent = `${currentCrc32} / 0 CHARS`;
+        updateProgress(0, 0);
+        statusText.textContent = '> warning: loaded file is 0 bytes (empty).';
+        copyTextBtn.disabled = true;
+        downloadTxtBtn.disabled = true;
+        clearBtn.disabled = false;
+        return;
+      }
+
+      statusText.textContent = `> reading "${file.name}" into memory...`;
+
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          currentBuffer = new Uint8Array(event.target.result);
+          currentCrc32 = computeCrc32(currentBuffer);
+          startConversion(currentBuffer, file.name);
+        } catch (err) {
+          showNotice(`error reading file buffer: ${err.message}`);
+          statusText.textContent = '> conversion aborted.';
+        }
+      };
+      reader.onerror = () => {
+        showNotice('failed to read binary file from disk.');
+        statusText.textContent = '> read error.';
+      };
+      reader.readAsArrayBuffer(file);
+    }
+
+    // ----------------------------------------------------------------------------
+    // NON-BLOCKING CHUNKED HEX CONVERSION ENGINE
+    // ----------------------------------------------------------------------------
+    function startConversion(uint8View, filename) {
+      const conversionId = ++activeConversionId;
+      const totalBytes = uint8View.length;
+      const lookup = isUpperCase ? HEX_UPPER : HEX_LOWER;
+      const mode = hexFormat;
+
+      // Reset Output UI
+      fullHexResult = '';
+      hexOutputBox.value = '';
+      previewNotice.classList.add('hidden');
+      copyTextBtn.disabled = true;
+      downloadTxtBtn.disabled = true;
+      clearBtn.disabled = false;
+      copyBtnText.textContent = '[ COPY TEXT ]';
+
+      statusText.textContent = `> converting "${filename}" to hex...`;
+      updateProgress(0, totalBytes);
+
+      const chunks = [];
+      let offset = 0;
+
+      function processNextChunk() {
+        // Abort if user started a newer conversion or cleared
+        if (conversionId !== activeConversionId) return;
+
+        const end = Math.min(offset + CHUNK_SIZE_BYTES, totalBytes);
+        const len = end - offset;
+        const part = new Array(len);
+
+        if (mode === 'continuous') {
+          for (let i = 0; i < len; i++) {
+            part[i] = lookup[uint8View[offset + i]];
+          }
+          chunks.push(part.join(''));
+        } else if (mode === 'spaced') {
+          for (let i = 0; i < len; i++) {
+            part[i] = lookup[uint8View[offset + i]];
+          }
+          chunks.push(part.join(' '));
+        } else if (mode === 'c_array') {
+          for (let i = 0; i < len; i++) {
+            part[i] = '0x' + lookup[uint8View[offset + i]];
+          }
+          chunks.push(part.join(', '));
+        }
+
+        offset = end;
+        updateProgress(offset, totalBytes);
+
+        if (offset < totalBytes) {
+          requestAnimationFrame(processNextChunk);
+        } else {
+          // Join chunks cleanly according to selected separator
+          const joiner = mode === 'continuous' ? '' : mode === 'spaced' ? ' ' : ', ';
+          fullHexResult = chunks.join(joiner);
+
+          // Render preview in textarea (truncate visually only if huge)
+          if (fullHexResult.length > PREVIEW_CHAR_LIMIT) {
+            hexOutputBox.value = fullHexResult.slice(0, PREVIEW_CHAR_LIMIT) + '\n\n... [TRUNCATED IN PREVIEW — FULL HEX READY FOR COPY / DOWNLOAD] ...';
+            previewNotice.classList.remove('hidden');
+          } else {
+            hexOutputBox.value = fullHexResult;
+            previewNotice.classList.add('hidden');
+          }
+
+          metaCrcHex.textContent = `${currentCrc32} / ${fullHexResult.length.toLocaleString()} CHARS`;
+          outputStats.textContent = `${totalBytes.toLocaleString()} bytes • ${fullHexResult.length.toLocaleString()} hex chars • CRC32: ${currentCrc32}`;
+          statusText.textContent = `> done! converted "${filename}" (${totalBytes.toLocaleString()} bytes).`;
+
+          copyTextBtn.disabled = false;
+          downloadTxtBtn.disabled = false;
+          clearBtn.disabled = false;
+        }
+      }
+
+      requestAnimationFrame(processNextChunk);
+    }
+
+    // ----------------------------------------------------------------------------
+    // CLIPBOARD COPY & .TXT DOWNLOAD EXPORT
+    // ----------------------------------------------------------------------------
+    copyTextBtn.addEventListener('click', () => {
+      if (!fullHexResult) return;
+
+      let copied = false;
+      try {
+        clipboardStaging.value = fullHexResult;
+        clipboardStaging.select();
+        clipboardStaging.setSelectionRange(0, fullHexResult.length);
+        copied = document.execCommand('copy');
+      } catch (e) {
+        copied = false;
+      }
+
+      if (!copied && navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(fullHexResult).catch(() => {});
+        copied = true;
+      }
+
+      if (copied) {
+        copyBtnText.textContent = '[ COPIED! ]';
+        statusText.textContent = `> copied ${fullHexResult.length.toLocaleString()} hex chars to clipboard.`;
+        setTimeout(() => {
+          copyBtnText.textContent = '[ COPY TEXT ]';
+        }, 2000);
+      } else {
+        showNotice('clipboard copy blocked by browser — select textarea and press Ctrl+C / Cmd+C.');
+      }
+    });
+
+    downloadTxtBtn.addEventListener('click', () => {
+      if (!fullHexResult || !currentFile) return;
+
+      const baseName = currentFile.name.replace(/\.[^/.]+$/, '') || 'rom_dump';
+      const outName = `${baseName}_hex.txt`;
+
+      const blob = new Blob([fullHexResult], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = outName;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      statusText.textContent = `> exported "${outName}".`;
+    });
+  </script>
+</body>
+</html>
